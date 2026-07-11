@@ -1,3 +1,4 @@
 packages:
+  - app
   - keeper
   - packages/txline-kit/packages/*

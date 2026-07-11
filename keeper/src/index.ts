@@ -9,18 +9,16 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as anchor from "@coral-xyz/anchor";
 import BN from "bn.js";
-import { ComputeBudgetProgram, PublicKey, SystemProgram } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { createTxlineClient, type ScoresStatValidationV2, type TxlineClient } from "@txline-kit/client";
-import { epochDayFromTs } from "@txline-kit/client/proofs";
-import { isFinalised, STAT } from "@txline-kit/constants";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { createTxlineClient, type TxlineClient } from "@txline-kit/client";
+import { isFinalised } from "@txline-kit/constants";
 import {
-  KIND_WDL, kindOverUnder, dailyScoresRootsPda, loadWallet, marketPda,
-  outcomeFromStats, proofplayProgram, ROOT, settleArgsFromProof,
-  TXORACLE_PROGRAM_ID, vaultPda, WORLD_CUP, type MarketKindArg,
+  KIND_WDL, kindOverUnder, loadWallet, marketPda, proofplayProgram, ROOT,
+  vaultPda, WORLD_CUP, type MarketKindArg,
 } from "./common.js";
+import { settleAllForFixture } from "./settler.js";
 
 const wallet = loadWallet();
 const program = proofplayProgram(wallet);
@@ -31,9 +29,13 @@ const mint = new PublicKey(
 );
 
 const replayBase = process.env.REPLAY_BASE_URL;
+/** Stream source: replay server in judge/demo mode, live devnet otherwise. */
 const tx: TxlineClient = replayBase
   ? createTxlineClient({ network: "replay", baseUrl: replayBase })
   : createTxlineClient({ network: "devnet", wallet });
+/** Proofs + fixtures ALWAYS come from the real API — a replay server replays
+ *  streams; Merkle proofs must be fetched fresh from TxLINE. */
+const api: TxlineClient = replayBase ? createTxlineClient({ network: "devnet", wallet }) : tx;
 
 const log = (msg: string, extra?: unknown) =>
   console.log(JSON.stringify({ ts: new Date().toISOString(), msg, ...(extra ? { extra } : {}) }));
@@ -60,9 +62,9 @@ async function createMarket(fixtureId: number, kickoffTsMs: number, kind: Market
 }
 
 async function bootstrapMarkets() {
-  await tx.auth.ensureActivated();
+  await api.auth.ensureActivated();
   const today = Math.floor(Date.now() / 86_400_000);
-  const fixtures = await tx.fixturesSnapshot(WORLD_CUP, today - 1);
+  const fixtures = await api.fixturesSnapshot(WORLD_CUP, today - 1);
   const upcoming = fixtures.filter((f) => f.StartTime > Date.now() + 10 * 60_000);
   log(`bootstrap: ${fixtures.length} fixtures, ${upcoming.length} upcoming`);
   for (const f of upcoming) {
@@ -76,39 +78,15 @@ async function bootstrapMarkets() {
 }
 
 async function settleFixture(fixtureId: number, finalSeq: number, stats: Record<string, number>) {
-  const proof = (await tx.statValidation({
-    fixtureId,
-    seq: finalSeq,
-    statKeys: [STAT.T1_GOALS, STAT.T2_GOALS],
-  })) as ScoresStatValidationV2;
-  const roots = dailyScoresRootsPda(epochDayFromTs(proof.summary.updateStats.minTimestamp));
-  const settlerToken = getAssociatedTokenAddressSync(mint, wallet.publicKey);
-
-  for (const kind of [KIND_WDL, kindOverUnder(5)]) {
-    const pda = marketPda(program.programId, fixtureId, kind);
-    if (!(await marketExists(pda))) continue;
-    const state = await program.account.market.fetch(pda);
-    if (!("open" in state.state)) continue;
-
-    const outcome = outcomeFromStats(stats, kind);
-    try {
-      const sig = await program.methods
-        .settle(settleArgsFromProof(proof, outcome))
-        .accounts({
-          market: pda,
-          vault: vaultPda(program.programId, pda),
-          settlerToken,
-          settler: wallet.publicKey,
-          dailyScoresMerkleRoots: roots,
-          txoracleProgram: TXORACLE_PROGRAM_ID,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })])
-        .rpc();
-      log("SETTLED ✅", { fixtureId, kind, outcome, sig });
-    } catch (err) {
-      log("settle failed", { fixtureId, kind, err: String(err).slice(0, 300) });
-    }
+  try {
+    const results = await settleAllForFixture({
+      program, wallet, api, mint, fixtureId, finalSeq, stats,
+      kinds: [KIND_WDL, kindOverUnder(5)],
+    });
+    for (const r of results) log("SETTLED ✅", r);
+    if (results.length === 0) log("no open markets for fixture", { fixtureId });
+  } catch (err) {
+    log("settle failed", { fixtureId, err: String(err).slice(0, 300) });
   }
 }
 
@@ -131,5 +109,6 @@ async function liveLoop() {
   }
 }
 
-await bootstrapMarkets();
+if (replayBase) log("replay mode: skipping market bootstrap (create demo markets via pnpm demo)");
+else await bootstrapMarkets();
 await liveLoop();

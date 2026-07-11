@@ -41,24 +41,48 @@ the market maker cannot lie, and neither can the settler.
 - `packages/txline-kit/` — vendored TxLINE SDK (auth, streams, proofs, replay)
 - `idls/txoracle.json` — TxLINE's IDL consumed via `declare_program!`
 
-## Run it
+## Judge runbook (5 minutes, no live match needed)
 
 ```bash
 pnpm install
-# one-time: demo pool mint
-pnpm setup-mint
-# create markets for upcoming fixtures + settle finished ones automatically
-ANCHOR_WALLET=../.keys/devnet-wallet.json pnpm keeper
-# full on-chain lifecycle test with a real TxLINE proof (uses a fresh finished fixture per run)
-pnpm test:devnet
+pnpm setup-mint        # one-time: demo pool mint (pUSDC, worthless devnet money)
+pnpm demo              # ONE COMMAND: full lifecycle against a REAL recorded match
 ```
 
-Judge/replay mode: point the keeper at a wire-compatible replay of a recorded
-fixture — nothing else changes:
+`pnpm demo` replays the committed corpus sample (Argentina 3–2 Cape Verde,
+recorded from TxLINE's historical endpoints) through a wire-compatible replay
+server, creates 1X2 + O/U markets, has two demo bettors take opposite sides,
+locks at kickoff, fast-forwards to full time, then fetches the REAL Merkle
+proof from TxLINE's live API and settles both markets on devnet via CPI —
+printing the app URLs for the receipts. Prereqs: a funded devnet wallet at
+`../.keys/devnet-wallet.json` (faucet.solana.com) — TxLINE activation happens
+automatically on first run.
 
 ```bash
-pnpm --dir packages/txline-kit txline-replay serve --fixture <id> --speed 30
+pnpm --dir app dev     # the app on http://localhost:3040 (grid / market / builder / receipt)
+```
+
+## Live mode (during the tournament)
+
+```bash
+ANCHOR_WALLET=../.keys/devnet-wallet.json pnpm keeper
+# creates markets for all upcoming fixtures, then settles each one
+# autonomously the moment TxLINE emits game_finalised
+```
+
+Replay judge mode for the keeper itself (streams from the replay server,
+proofs still from the real API):
+
+```bash
+pnpm --dir packages/txline-kit exec txline-replay serve --fixture 18175918 --speed 30 --corpus ../../corpus-sample
 REPLAY_BASE_URL=http://localhost:8788/api pnpm keeper
+```
+
+Full on-chain lifecycle test (uses a fresh finished fixture every run,
+including negative cases — false outcome, mid-match proof, loser claim):
+
+```bash
+pnpm test:devnet
 ```
 
 ## TxLINE endpoints used
@@ -67,8 +91,22 @@ REPLAY_BASE_URL=http://localhost:8788/api pnpm keeper
 `/api/scores/historical/{id}`, `/api/odds/updates/{day}/{hour}/{interval}`,
 `/api/scores/stat-validation` → `txoracle::validate_stat` CPI.
 
+## Layout (additions)
+- `app/` — Next.js frontend: tournament grid, market page (pool share ·
+  parimutuel multiplier per outcome), market builder with a live preview of
+  the on-chain settlement contract in TxLINE stat-key language, permissionless
+  settle-from-the-UI (any wallet can earn the bounty), and the settlement
+  receipt page (Merkle path: final stats → event-stat root → on-chain daily
+  root PDA, with explorer links). The browser never talks to TxLINE or signs
+  anything it didn't build: API routes return unsigned base64 transactions the
+  wallet signs (Solana Pay pattern).
+- `corpus-sample/` — committed replay fixture for the judge demo.
+
 ## Status
-- [x] Anchor program deployed to devnet, full lifecycle test green
-- [x] Keeper: market bootstrap + live settlement loop
-- [ ] Frontend (tournament grid, market page, builder, Merkle receipt page)
-- [ ] docker-compose judge runbook + demo corpus sample
+- [x] Anchor program deployed to devnet, full lifecycle test green (incl.
+      false-outcome rejection + mid-match finality guard, verified on-chain)
+- [x] Keeper: market bootstrap + autonomous live settlement loop
+- [x] Frontend: grid, market page, builder, receipt — verified against devnet
+- [x] One-command judge demo (`pnpm demo`) with committed corpus sample
+- [ ] Vercel deploy (set KEEPER_WALLET_JSON, MINT, TXLINE_JWT/TXLINE_API_TOKEN,
+      NEXT_PUBLIC_RPC_URL) + demo video

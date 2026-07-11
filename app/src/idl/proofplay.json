@@ -1,0 +1,892 @@
+{
+  "address": "DDLwN6s1mswd7wiXFHy76eTahw4VYPAUrvEHZNdcHaRw",
+  "metadata": {
+    "name": "proofplay",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Permissionless parimutuel markets settled by TxLINE Merkle proofs (CPI into txoracle)"
+  },
+  "instructions": [
+    {
+      "name": "bet",
+      "docs": [
+        "Join the pool for one outcome. Re-betting adds to the SAME outcome only."
+      ],
+      "discriminator": [
+        94,
+        203,
+        166,
+        126,
+        20,
+        243,
+        169,
+        82
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              },
+              {
+                "kind": "account",
+                "path": "bettor"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bettor_token",
+          "writable": true
+        },
+        {
+          "name": "bettor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "outcome",
+          "type": "u8"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "claim",
+      "docs": [
+        "Winners: stake * distributable / winning_pool. Voided (or nobody backed",
+        "the winner): full stake refund. One claim per position."
+      ],
+      "discriminator": [
+        62,
+        198,
+        214,
+        193,
+        213,
+        159,
+        108,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              },
+              {
+                "kind": "account",
+                "path": "claimer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "claimer_token",
+          "writable": true
+        },
+        {
+          "name": "claimer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "create_market",
+      "docs": [
+        "Permissionless. One market per (fixture, kind); PDA seeds enforce it.",
+        "`kickoff_ts` is unix SECONDS (bets lock at kickoff)."
+      ],
+      "discriminator": [
+        103,
+        226,
+        97,
+        235,
+        200,
+        188,
+        251,
+        254
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "fixture_id"
+              },
+              {
+                "kind": "arg",
+                "path": "kind"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "fixture_id",
+          "type": "i64"
+        },
+        {
+          "name": "kickoff_ts",
+          "type": "i64"
+        },
+        {
+          "name": "kind",
+          "type": {
+            "defined": {
+              "name": "MarketKind"
+            }
+          }
+        },
+        {
+          "name": "bounty_bps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "settle",
+      "docs": [
+        "THE CENTERPIECE. Permissionless: anyone holding a valid TxLINE proof of",
+        "the FINAL match stats can settle and earn the bounty. The program:",
+        "1. pins the stat keys + finality period (soundness guards),",
+        "2. reconstructs the predicate for `claimed_outcome` from the market kind,",
+        "3. CPIs into txoracle::validate_stat against the daily Merkle root,",
+        "4. on success records the outcome + receipt and pays the settler bounty."
+      ],
+      "discriminator": [
+        175,
+        42,
+        185,
+        87,
+        144,
+        131,
+        102,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "settler_token",
+          "writable": true
+        },
+        {
+          "name": "settler",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "daily_scores_merkle_roots",
+          "docs": [
+            "verifies the derivation + contents against the epoch-day seeds."
+          ]
+        },
+        {
+          "name": "txoracle_program",
+          "address": "6pW64gN1s2uqjHkn1unFeEjAwJkPGHoppGvS715wyP2J"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "SettleArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "void_market",
+      "docs": [
+        "Permissionless safety valve: if no valid final proof settled the market",
+        "within VOID_TIMEOUT_SECS of kickoff (abandoned/postponed/cancelled",
+        "fixture, or coverage loss), everyone reclaims their stake pro-rata."
+      ],
+      "discriminator": [
+        243,
+        175,
+        46,
+        124,
+        95,
+        101,
+        39,
+        69
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Market",
+      "discriminator": [
+        219,
+        190,
+        213,
+        55,
+        0,
+        227,
+        198,
+        154
+      ]
+    },
+    {
+      "name": "Position",
+      "discriminator": [
+        170,
+        188,
+        143,
+        228,
+        122,
+        64,
+        247,
+        208
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "MarketNotOpen",
+      "msg": "Market is not open"
+    },
+    {
+      "code": 6001,
+      "name": "BettingClosed",
+      "msg": "Betting closed at kickoff"
+    },
+    {
+      "code": 6002,
+      "name": "BadOutcome",
+      "msg": "Outcome index out of range for this market kind"
+    },
+    {
+      "code": 6003,
+      "name": "ZeroAmount",
+      "msg": "Amount must be > 0"
+    },
+    {
+      "code": 6004,
+      "name": "OutcomeMismatch",
+      "msg": "Position already backs a different outcome"
+    },
+    {
+      "code": 6005,
+      "name": "FixtureMismatch",
+      "msg": "Proof fixture does not match this market"
+    },
+    {
+      "code": 6006,
+      "name": "TimestampMismatch",
+      "msg": "ts must equal the proof summary's minTimestamp"
+    },
+    {
+      "code": 6007,
+      "name": "WrongStatKey",
+      "msg": "Proof must cover TxLINE stat keys 1 (home goals) and 2 (away goals)"
+    },
+    {
+      "code": 6008,
+      "name": "NotFinal",
+      "msg": "Stats are not from the game_finalised record (period != 100)"
+    },
+    {
+      "code": 6009,
+      "name": "ProofRejected",
+      "msg": "txoracle rejected the proof for the claimed outcome"
+    },
+    {
+      "code": 6010,
+      "name": "VoidTooEarly",
+      "msg": "Void timeout has not elapsed"
+    },
+    {
+      "code": 6011,
+      "name": "MarketNotSettled",
+      "msg": "Market not settled yet"
+    },
+    {
+      "code": 6012,
+      "name": "NotAWinner",
+      "msg": "Position did not back the winning outcome"
+    },
+    {
+      "code": 6013,
+      "name": "AlreadyClaimed",
+      "msg": "Already claimed"
+    },
+    {
+      "code": 6014,
+      "name": "WrongMint",
+      "msg": "Token account mint does not match the market"
+    },
+    {
+      "code": 6015,
+      "name": "NotYourPosition",
+      "msg": "Not your position"
+    },
+    {
+      "code": 6016,
+      "name": "BadLine",
+      "msg": "Over/under line must be a half line (odd line_x2) below 20 goals"
+    },
+    {
+      "code": 6017,
+      "name": "BountyTooHigh",
+      "msg": "Bounty exceeds maximum"
+    }
+  ],
+  "types": [
+    {
+      "name": "Market",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fixture_id",
+            "type": "i64"
+          },
+          {
+            "name": "kickoff_ts",
+            "type": "i64"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "MarketKind"
+              }
+            }
+          },
+          {
+            "name": "state",
+            "type": {
+              "defined": {
+                "name": "MarketState"
+              }
+            }
+          },
+          {
+            "name": "outcome",
+            "type": "u8"
+          },
+          {
+            "name": "num_outcomes",
+            "type": "u8"
+          },
+          {
+            "name": "pools",
+            "type": {
+              "array": [
+                "u64",
+                3
+              ]
+            }
+          },
+          {
+            "name": "total_pool",
+            "type": "u64"
+          },
+          {
+            "name": "bounty_bps",
+            "type": "u16"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "receipt_event_stat_root",
+            "docs": [
+              "Settlement receipt: the Merkle root the winning proof hung off, and the",
+              "proof batch timestamp — permanent, user-auditable evidence."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "receipt_min_timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "settler",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketKind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "WinnerDrawLoser"
+          },
+          {
+            "name": "TotalGoalsOverUnder",
+            "fields": [
+              {
+                "name": "line_x2",
+                "type": "u16"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketState",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Open"
+          },
+          {
+            "name": "Settled"
+          },
+          {
+            "name": "Voided"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Position",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "bettor",
+            "type": "pubkey"
+          },
+          {
+            "name": "outcome",
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "claimed",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProofNode",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "is_right_sibling",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ScoreStat",
+      "docs": [
+        "The on-chain representation of a single, provable key-value statistic.",
+        "This is the leaf of the inner-most Merkle tree."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key",
+            "type": "u32"
+          },
+          {
+            "name": "value",
+            "type": "i32"
+          },
+          {
+            "name": "period",
+            "type": "i32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ScoresBatchSummary",
+      "docs": [
+        "The summary for a single fixture's scores events within a 5-minute batch.",
+        "This contains the root of the sub-tree of all events for that fixture."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fixture_id",
+            "type": "i64"
+          },
+          {
+            "name": "update_stats",
+            "type": {
+              "defined": {
+                "name": "ScoresUpdateStats"
+              }
+            }
+          },
+          {
+            "name": "events_sub_tree_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ScoresUpdateStats",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "update_count",
+            "type": "i32"
+          },
+          {
+            "name": "min_timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "max_timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SettleArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "claimed_outcome",
+            "type": "u8"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "summary",
+            "type": {
+              "defined": {
+                "name": "ScoresBatchSummary"
+              }
+            }
+          },
+          {
+            "name": "fixture_proof",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "ProofNode"
+                }
+              }
+            }
+          },
+          {
+            "name": "main_tree_proof",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "ProofNode"
+                }
+              }
+            }
+          },
+          {
+            "name": "stat_a",
+            "docs": [
+              "Must prove TxLINE key 1 (home goals, total period) at finality."
+            ],
+            "type": {
+              "defined": {
+                "name": "StatTerm"
+              }
+            }
+          },
+          {
+            "name": "stat_b",
+            "docs": [
+              "Must prove TxLINE key 2 (away goals, total period) at finality."
+            ],
+            "type": {
+              "defined": {
+                "name": "StatTerm"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "StatTerm",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "stat_to_prove",
+            "type": {
+              "defined": {
+                "name": "ScoreStat"
+              }
+            }
+          },
+          {
+            "name": "event_stat_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "stat_proof",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "ProofNode"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

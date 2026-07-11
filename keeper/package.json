@@ -9,7 +9,8 @@
     "@solana/web3.js": "^1.98.0",
     "@txline-kit/client": "workspace:*",
     "@txline-kit/constants": "workspace:*",
-    "bn.js": "^5.2.1"
+    "bn.js": "^5.2.1",
+    "@txline-kit/replay": "workspace:*"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.6"
