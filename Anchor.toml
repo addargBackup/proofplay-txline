@@ -1,0 +1,19 @@
+[toolchain]
+anchor_version = "0.31.1"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.devnet]
+proofplay = "DDLwN6s1mswd7wiXFHy76eTahw4VYPAUrvEHZNdcHaRw"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "devnet"
+wallet = "../.keys/devnet-wallet.json"
+
+[scripts]
+test = "pnpm tsx tests/settle-devnet.ts"

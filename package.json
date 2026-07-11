@@ -1,0 +1,24 @@
+{
+  "name": "proofplay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Permissionless parimutuel World Cup markets settled by TxLINE Merkle proofs on Solana devnet",
+  "license": "MIT",
+  "scripts": {
+    "keeper": "tsx keeper/src/index.ts",
+    "setup-mint": "tsx keeper/src/setup-mint.ts",
+    "test:devnet": "tsx tests/settle-devnet.ts"
+  },
+  "devDependencies": {
+    "@coral-xyz/anchor": "^0.31.1",
+    "@solana/spl-token": "^0.4.15",
+    "@solana/web3.js": "^1.98.4",
+    "@txline-kit/client": "workspace:*",
+    "@txline-kit/constants": "workspace:*",
+    "@types/node": "^22.10.0",
+    "bn.js": "^5.2.5",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}
