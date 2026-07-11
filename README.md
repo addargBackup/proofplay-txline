@@ -14,6 +14,24 @@ the market maker cannot lie, and neither can the settler.
 - Data: [TxLINE](https://txline.txodds.com) World Cup feeds via the vendored
   [`txline-kit`](packages/txline-kit) SDK (free devnet tier, 0s delay)
 
+## The market language
+
+A market is data: a `MarketKind` stored on-chain whose settlement predicate the
+program reconstructs at settle time. Four kinds ship, spanning the whole
+TxLINE team-level stat vocabulary (8 base stats × 8 period prefixes × any
+half line):
+
+| Kind | Example | Proof keys |
+|---|---|---|
+| `WinnerDrawLoser` | 1X2, 90-minute result | goals 1, 2 (Subtract vs 0) |
+| `TotalGoalsOverUnder{line_x2}` | total goals O/U 2.5 | goals 1+2 (Add vs line) |
+| `StatOverUnder{stat_key,line_x2}` | "H2 home corners O/U 5.5" = key **3007** | any single composed key |
+| `TwoStatSumOverUnder{key_a,key_b,line_x2}` | **"Team A corners + Team B corners > 10"** (the track's parametric example) = keys 7+8 | any pair (Add vs line) |
+
+The builder UI composes these (stat × scope × period × line) and previews the
+exact on-chain rule before deploying. All four are covered by the devnet test
+suite, including a corners prop settled with a keys-7+8 Merkle proof.
+
 ## Why this can't cheat (the soundness story)
 
 1. **The settler picks WHICH outcome to prove; the program builds the predicate.**

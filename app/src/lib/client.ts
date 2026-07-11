@@ -9,11 +9,17 @@ export interface FixtureMeta {
   competition: string;
 }
 
+export type MarketKindView =
+  | { type: "wdl" }
+  | { type: "ou"; lineX2: number }
+  | { type: "statOu"; statKey: number; lineX2: number }
+  | { type: "sumOu"; keyA: number; keyB: number; lineX2: number };
+
 export interface MarketView {
   address: string;
   fixtureId: number;
   kickoffTs: number;
-  kind: { type: "wdl" } | { type: "ou"; lineX2: number };
+  kind: MarketKindView;
   state: "open" | "settled" | "voided";
   outcome: number | null;
   numOutcomes: number;
@@ -29,6 +35,25 @@ export interface MarketView {
   fixture: FixtureMeta | null;
 }
 
+const STAT_BASE_NAMES: Record<number, [string, string]> = {
+  1: ["goals", "home"], 2: ["goals", "away"],
+  3: ["yellow cards", "home"], 4: ["yellow cards", "away"],
+  5: ["red cards", "home"], 6: ["red cards", "away"],
+  7: ["corners", "home"], 8: ["corners", "away"],
+};
+const PERIOD_NAMES: Record<number, string> = {
+  0: "", 1000: "H1 ", 2000: "HT ", 3000: "H2 ", 4000: "ET1 ", 5000: "ET2 ", 6000: "pens ", 7000: "ET ",
+};
+
+/** "3007" -> "H2 home corners" — human name for a composed TxLINE stat key. */
+export function statKeyName(key: number, fixture?: FixtureMeta | null): string {
+  const base = key % 1000;
+  const period = key - base;
+  const [metric, side] = STAT_BASE_NAMES[base] ?? ["stat " + base, ""];
+  const team = side === "home" ? fixture?.home ?? "home" : fixture?.away ?? "away";
+  return `${PERIOD_NAMES[period] ?? ""}${team} ${metric}`;
+}
+
 export function outcomeLabels(m: MarketView): string[] {
   if (m.kind.type === "wdl") {
     return [m.fixture?.home ?? "Home", "Draw", m.fixture?.away ?? "Away"];
@@ -38,7 +63,20 @@ export function outcomeLabels(m: MarketView): string[] {
 }
 
 export function kindLabel(m: MarketView): string {
-  return m.kind.type === "wdl" ? "Match result (90 min)" : `Total goals O/U ${m.kind.lineX2 / 2}`;
+  switch (m.kind.type) {
+    case "wdl":
+      return "Match result (90 min)";
+    case "ou":
+      return `Total goals O/U ${m.kind.lineX2 / 2}`;
+    case "statOu":
+      return `${statKeyName(m.kind.statKey, m.fixture)} O/U ${m.kind.lineX2 / 2}`;
+    case "sumOu": {
+      const baseA = m.kind.keyA % 1000;
+      const metric = STAT_BASE_NAMES[baseA]?.[0] ?? "stats";
+      const period = PERIOD_NAMES[m.kind.keyA - baseA] ?? "";
+      return `${period}Total ${metric} O/U ${m.kind.lineX2 / 2}`;
+    }
+  }
 }
 
 /** Parimutuel payout multiplier for one outcome at current pools. */

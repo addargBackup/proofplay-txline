@@ -42,17 +42,49 @@ export function proofplayProgram(wallet: Keypair): anchor.Program<any> {
 
 export type MarketKindArg =
   | { winnerDrawLoser: Record<string, never> }
-  | { totalGoalsOverUnder: { lineX2: number } };
+  | { totalGoalsOverUnder: { lineX2: number } }
+  | { statOverUnder: { statKey: number; lineX2: number } }
+  | { twoStatSumOverUnder: { keyA: number; keyB: number; lineX2: number } };
 
 export const KIND_WDL: MarketKindArg = { winnerDrawLoser: {} };
 export const kindOverUnder = (lineX2: number): MarketKindArg => ({ totalGoalsOverUnder: { lineX2 } });
+export const kindStatOverUnder = (statKeyNum: number, lineX2: number): MarketKindArg => ({
+  statOverUnder: { statKey: statKeyNum, lineX2 },
+});
+export const kindTwoStatSum = (keyA: number, keyB: number, lineX2: number): MarketKindArg => ({
+  twoStatSumOverUnder: { keyA, keyB, lineX2 },
+});
 
 export function kindSeed(kind: MarketKindArg): Buffer {
   if ("winnerDrawLoser" in kind) return Buffer.from([0, 0, 0]);
-  const b = Buffer.alloc(3);
-  b[0] = 1;
-  b.writeUInt16LE(kind.totalGoalsOverUnder.lineX2, 1);
+  if ("totalGoalsOverUnder" in kind) {
+    const b = Buffer.alloc(3);
+    b[0] = 1;
+    b.writeUInt16LE(kind.totalGoalsOverUnder.lineX2, 1);
+    return b;
+  }
+  if ("statOverUnder" in kind) {
+    const b = Buffer.alloc(5);
+    b[0] = 2;
+    b.writeUInt16LE(kind.statOverUnder.statKey, 1);
+    b.writeUInt16LE(kind.statOverUnder.lineX2, 3);
+    return b;
+  }
+  const b = Buffer.alloc(7);
+  b[0] = 3;
+  b.writeUInt16LE(kind.twoStatSumOverUnder.keyA, 1);
+  b.writeUInt16LE(kind.twoStatSumOverUnder.keyB, 3);
+  b.writeUInt16LE(kind.twoStatSumOverUnder.lineX2, 5);
   return b;
+}
+
+/** TxLINE stat keys the settlement proof must cover, in order (a, b?). */
+export function kindStatKeys(kind: MarketKindArg): number[] {
+  if ("winnerDrawLoser" in kind || "totalGoalsOverUnder" in kind) {
+    return [STAT.T1_GOALS, STAT.T2_GOALS];
+  }
+  if ("statOverUnder" in kind) return [kind.statOverUnder.statKey];
+  return [kind.twoStatSumOverUnder.keyA, kind.twoStatSumOverUnder.keyB];
 }
 
 export function marketPda(programId: PublicKey, fixtureId: number, kind: MarketKindArg): PublicKey {
@@ -79,7 +111,8 @@ export function dailyScoresRootsPda(epochDay: number): PublicKey {
   )[0];
 }
 
-/** Map a V2 proof bundle (statKeys=[1,2]) to the program's SettleArgs. */
+/** Map a V2 proof bundle (fetched with EXACTLY the kind's statKeys, in order)
+ *  to the program's SettleArgs. statB is null for single-stat kinds. */
 export function settleArgsFromProof(v2: ScoresStatValidationV2, claimedOutcome: number) {
   const statTerm = (i: number) => ({
     statToProve: v2.statsToProve[i],
@@ -101,15 +134,24 @@ export function settleArgsFromProof(v2: ScoresStatValidationV2, claimedOutcome: 
     fixtureProof: toProofNodes(v2.subTreeProof),
     mainTreeProof: toProofNodes(v2.mainTreeProof),
     statA: statTerm(0),
-    statB: statTerm(1),
+    statB: v2.statsToProve.length > 1 ? statTerm(1) : null,
   };
 }
 
 /** Derive the true outcome index from a final Stats map. */
 export function outcomeFromStats(stats: Record<string, number>, kind: MarketKindArg): number {
-  const home = stats[String(statKey(STAT.T1_GOALS))] ?? 0;
-  const away = stats[String(statKey(STAT.T2_GOALS))] ?? 0;
-  if ("winnerDrawLoser" in kind) return home > away ? 0 : home === away ? 1 : 2;
-  const line = kind.totalGoalsOverUnder.lineX2 / 2;
-  return home + away > line ? 0 : 1;
+  const val = (k: number) => stats[String(k)] ?? 0;
+  if ("winnerDrawLoser" in kind) {
+    const home = val(STAT.T1_GOALS);
+    const away = val(STAT.T2_GOALS);
+    return home > away ? 0 : home === away ? 1 : 2;
+  }
+  if ("totalGoalsOverUnder" in kind) {
+    return val(STAT.T1_GOALS) + val(STAT.T2_GOALS) > kind.totalGoalsOverUnder.lineX2 / 2 ? 0 : 1;
+  }
+  if ("statOverUnder" in kind) {
+    return val(kind.statOverUnder.statKey) > kind.statOverUnder.lineX2 / 2 ? 0 : 1;
+  }
+  const { keyA, keyB, lineX2 } = kind.twoStatSumOverUnder;
+  return val(keyA) + val(keyB) > lineX2 / 2 ? 0 : 1;
 }

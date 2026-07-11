@@ -135,17 +135,19 @@ pub mod proofplay {
             args.ts == args.summary.update_stats.min_timestamp,
             ProofPlayError::TimestampMismatch
         );
-        require!(
-            args.stat_a.stat_to_prove.key == KEY_HOME_GOALS
-                && args.stat_b.stat_to_prove.key == KEY_AWAY_GOALS,
-            ProofPlayError::WrongStatKey
-        );
+        // Stat keys are pinned by the MARKET's kind, never chosen by the caller.
+        let (key_a, key_b) = market.kind.expected_keys();
+        require!(args.stat_a.stat_to_prove.key == key_a, ProofPlayError::WrongStatKey);
+        match (&args.stat_b, key_b) {
+            (Some(b), Some(k)) => require!(b.stat_to_prove.key == k, ProofPlayError::WrongStatKey),
+            (None, None) => {}
+            _ => return err!(ProofPlayError::WrongStatKey),
+        }
         // FINALITY GUARD: only stats from the game_finalised record carry 100.
-        require!(
-            args.stat_a.stat_to_prove.period == FINAL_PERIOD
-                && args.stat_b.stat_to_prove.period == FINAL_PERIOD,
-            ProofPlayError::NotFinal
-        );
+        require!(args.stat_a.stat_to_prove.period == FINAL_PERIOD, ProofPlayError::NotFinal);
+        if let Some(b) = &args.stat_b {
+            require!(b.stat_to_prove.period == FINAL_PERIOD, ProofPlayError::NotFinal);
+        }
 
         // --- Predicate is built by the PROGRAM, not the caller --------------
         let (predicate, op) = market.kind.predicate_for(args.claimed_outcome)?;
@@ -164,8 +166,8 @@ pub mod proofplay {
             args.main_tree_proof.clone(),
             predicate,
             args.stat_a.clone(),
-            Some(args.stat_b.clone()),
-            Some(op),
+            args.stat_b.clone(),
+            op,
         )?;
         require!(ret.get(), ProofPlayError::ProofRejected);
 
@@ -176,7 +178,7 @@ pub mod proofplay {
             let fid = m.fixture_id.to_le_bytes();
             let kseed = m.kind.seed();
             let bump = [m.bump];
-            let seeds: &[&[u8]] = &[b"market", &fid, &kseed, &bump];
+            let seeds: &[&[u8]] = &[b"market", &fid, kseed.as_slice(), &bump];
             token::transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
@@ -244,7 +246,7 @@ pub mod proofplay {
         let fid = market.fixture_id.to_le_bytes();
         let kseed = market.kind.seed();
         let bump = [market.bump];
-        let seeds: &[&[u8]] = &[b"market", &fid, &kseed, &bump];
+        let seeds: &[&[u8]] = &[b"market", &fid, kseed.as_slice(), &bump];
         token::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -275,6 +277,26 @@ pub enum MarketKind {
     /// Outcomes [over, under] of total goals vs a HALF line (line_x2 must be
     /// odd, e.g. 5 => 2.5): over = sum > (line_x2-1)/2, under = sum < (line_x2+1)/2.
     TotalGoalsOverUnder { line_x2: u16 },
+    /// THE MARKET LANGUAGE: any single TxLINE stat (composed key = period
+    /// prefix + base, e.g. 3007 = H2 home corners) over/under a half line.
+    /// Outcomes [over, under].
+    StatOverUnder { stat_key: u16, line_x2: u16 },
+    /// Sum of two TxLINE stats over/under a half line — the parametric prop
+    /// primitive ("Team A corners + Team B corners > 10.5" = keys 7+8, line 21).
+    /// Outcomes [over, under].
+    TwoStatSumOverUnder { key_a: u16, key_b: u16, line_x2: u16 },
+}
+
+/// Valid composed TxLINE stat key: base 1-8 (goals/yellows/reds/corners per
+/// team) + period prefix in {0,1000,...,7000}. See txline-kit VERIFIED.md.
+fn valid_stat_key(key: u16) -> bool {
+    let base = key % 1000;
+    let period = key - base;
+    (1..=8).contains(&base) && period % 1000 == 0 && period <= 7000
+}
+
+fn valid_half_line(line_x2: u16) -> bool {
+    line_x2 % 2 == 1 && line_x2 < 100
 }
 
 impl MarketKind {
@@ -282,7 +304,20 @@ impl MarketKind {
         match self {
             MarketKind::WinnerDrawLoser => Ok(()),
             MarketKind::TotalGoalsOverUnder { line_x2 } => {
-                require!(line_x2 % 2 == 1 && *line_x2 < 40, ProofPlayError::BadLine);
+                require!(valid_half_line(*line_x2), ProofPlayError::BadLine);
+                Ok(())
+            }
+            MarketKind::StatOverUnder { stat_key, line_x2 } => {
+                require!(valid_stat_key(*stat_key), ProofPlayError::BadStatKey);
+                require!(valid_half_line(*line_x2), ProofPlayError::BadLine);
+                Ok(())
+            }
+            MarketKind::TwoStatSumOverUnder { key_a, key_b, line_x2 } => {
+                require!(
+                    valid_stat_key(*key_a) && valid_stat_key(*key_b) && key_a != key_b,
+                    ProofPlayError::BadStatKey
+                );
+                require!(valid_half_line(*line_x2), ProofPlayError::BadLine);
                 Ok(())
             }
         }
@@ -291,38 +326,69 @@ impl MarketKind {
     pub fn num_outcomes(&self) -> u8 {
         match self {
             MarketKind::WinnerDrawLoser => 3,
-            MarketKind::TotalGoalsOverUnder { .. } => 2,
+            _ => 2,
         }
     }
 
     /// PDA seed component: one market per (fixture, kind incl. params).
-    pub fn seed(&self) -> [u8; 3] {
+    /// Legacy kinds keep their original byte layout so pre-upgrade markets
+    /// remain addressable.
+    pub fn seed(&self) -> Vec<u8> {
         match self {
-            MarketKind::WinnerDrawLoser => [0, 0, 0],
+            MarketKind::WinnerDrawLoser => vec![0, 0, 0],
             MarketKind::TotalGoalsOverUnder { line_x2 } => {
                 let b = line_x2.to_le_bytes();
-                [1, b[0], b[1]]
+                vec![1, b[0], b[1]]
+            }
+            MarketKind::StatOverUnder { stat_key, line_x2 } => {
+                let k = stat_key.to_le_bytes();
+                let l = line_x2.to_le_bytes();
+                vec![2, k[0], k[1], l[0], l[1]]
+            }
+            MarketKind::TwoStatSumOverUnder { key_a, key_b, line_x2 } => {
+                let a = key_a.to_le_bytes();
+                let b = key_b.to_le_bytes();
+                let l = line_x2.to_le_bytes();
+                vec![3, a[0], a[1], b[0], b[1], l[0], l[1]]
             }
         }
     }
 
+    /// Which TxLINE stat keys the settlement proof must cover.
+    pub fn expected_keys(&self) -> (u32, Option<u32>) {
+        match self {
+            MarketKind::WinnerDrawLoser => (KEY_HOME_GOALS, Some(KEY_AWAY_GOALS)),
+            MarketKind::TotalGoalsOverUnder { .. } => (KEY_HOME_GOALS, Some(KEY_AWAY_GOALS)),
+            MarketKind::StatOverUnder { stat_key, .. } => (*stat_key as u32, None),
+            MarketKind::TwoStatSumOverUnder { key_a, key_b, .. } => (*key_a as u32, Some(*key_b as u32)),
+        }
+    }
+
     /// The deterministic core: claimed outcome -> txoracle predicate.
-    pub fn predicate_for(&self, outcome: u8) -> Result<(TraderPredicate, BinaryExpression)> {
+    /// Returns the op to combine stat_a with stat_b (None = single-stat).
+    pub fn predicate_for(&self, outcome: u8) -> Result<(TraderPredicate, Option<BinaryExpression>)> {
         let p = |threshold: i32, comparison: Comparison| TraderPredicate { threshold, comparison };
+        let over_under = |line_x2: u16, outcome: u8, op: Option<BinaryExpression>| {
+            let line = line_x2 as i32;
+            match outcome {
+                0 => Ok((p((line - 1) / 2, Comparison::GreaterThan), op)),
+                1 => Ok((p((line + 1) / 2, Comparison::LessThan), op)),
+                _ => err!(ProofPlayError::BadOutcome),
+            }
+        };
         match self {
             MarketKind::WinnerDrawLoser => match outcome {
-                0 => Ok((p(0, Comparison::GreaterThan), BinaryExpression::Subtract)),
-                1 => Ok((p(0, Comparison::EqualTo), BinaryExpression::Subtract)),
-                2 => Ok((p(0, Comparison::LessThan), BinaryExpression::Subtract)),
+                0 => Ok((p(0, Comparison::GreaterThan), Some(BinaryExpression::Subtract))),
+                1 => Ok((p(0, Comparison::EqualTo), Some(BinaryExpression::Subtract))),
+                2 => Ok((p(0, Comparison::LessThan), Some(BinaryExpression::Subtract))),
                 _ => err!(ProofPlayError::BadOutcome),
             },
             MarketKind::TotalGoalsOverUnder { line_x2 } => {
-                let line = *line_x2 as i32;
-                match outcome {
-                    0 => Ok((p((line - 1) / 2, Comparison::GreaterThan), BinaryExpression::Add)),
-                    1 => Ok((p((line + 1) / 2, Comparison::LessThan), BinaryExpression::Add)),
-                    _ => err!(ProofPlayError::BadOutcome),
-                }
+                over_under(*line_x2, outcome, Some(BinaryExpression::Add))
+            }
+            MarketKind::StatOverUnder { line_x2, .. } => over_under(*line_x2, outcome, None),
+            MarketKind::TwoStatSumOverUnder { line_x2, .. } => {
+                over_under(*line_x2, outcome, Some(BinaryExpression::Add))
             }
         }
     }
@@ -342,10 +408,10 @@ pub struct SettleArgs {
     pub summary: ScoresBatchSummary,
     pub fixture_proof: Vec<ProofNode>,
     pub main_tree_proof: Vec<ProofNode>,
-    /// Must prove TxLINE key 1 (home goals, total period) at finality.
+    /// Must prove the market kind's first expected stat key at finality.
     pub stat_a: StatTerm,
-    /// Must prove TxLINE key 2 (away goals, total period) at finality.
-    pub stat_b: StatTerm,
+    /// Second stat term iff the kind expects one (e.g. away goals for 1X2).
+    pub stat_b: Option<StatTerm>,
 }
 
 // ---------------------------------------------------------------------------
@@ -511,8 +577,10 @@ pub enum ProofPlayError {
     WrongMint,
     #[msg("Not your position")]
     NotYourPosition,
-    #[msg("Over/under line must be a half line (odd line_x2) below 20 goals")]
+    #[msg("Over/under line must be a half line (odd line_x2)")]
     BadLine,
+    #[msg("Unknown TxLINE stat key (base 1-8 + period prefix 0..7000)")]
+    BadStatKey,
     #[msg("Bounty exceeds maximum")]
     BountyTooHigh,
 }

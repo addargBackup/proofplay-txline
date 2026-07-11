@@ -77,17 +77,72 @@ export function txline(): TxlineClient {
 // --- kinds + PDAs (mirror of programs/proofplay) ------------------------------
 export type MarketKindArg =
   | { winnerDrawLoser: Record<string, never> }
-  | { totalGoalsOverUnder: { lineX2: number } };
+  | { totalGoalsOverUnder: { lineX2: number } }
+  | { statOverUnder: { statKey: number; lineX2: number } }
+  | { twoStatSumOverUnder: { keyA: number; keyB: number; lineX2: number } };
 
 export const KIND_WDL: MarketKindArg = { winnerDrawLoser: {} };
 export const kindOverUnder = (lineX2: number): MarketKindArg => ({ totalGoalsOverUnder: { lineX2 } });
 
+export function validStatKey(key: number): boolean {
+  const base = key % 1000;
+  const period = key - base;
+  return base >= 1 && base <= 8 && period % 1000 === 0 && period <= 7000;
+}
+export const validHalfLine = (lineX2: number) => lineX2 % 2 === 1 && lineX2 > 0 && lineX2 < 100;
+
+/** Validate an untrusted kind payload from the client. */
+export function parseKind(raw: unknown): MarketKindArg {
+  const k = raw as MarketKindArg;
+  if (k && typeof k === "object") {
+    if ("winnerDrawLoser" in k) return KIND_WDL;
+    if ("totalGoalsOverUnder" in k && validHalfLine(Number(k.totalGoalsOverUnder?.lineX2))) {
+      return kindOverUnder(Number(k.totalGoalsOverUnder.lineX2));
+    }
+    if ("statOverUnder" in k) {
+      const { statKey, lineX2 } = k.statOverUnder ?? {};
+      if (validStatKey(Number(statKey)) && validHalfLine(Number(lineX2))) {
+        return { statOverUnder: { statKey: Number(statKey), lineX2: Number(lineX2) } };
+      }
+    }
+    if ("twoStatSumOverUnder" in k) {
+      const { keyA, keyB, lineX2 } = k.twoStatSumOverUnder ?? {};
+      if (validStatKey(Number(keyA)) && validStatKey(Number(keyB)) && keyA !== keyB && validHalfLine(Number(lineX2))) {
+        return { twoStatSumOverUnder: { keyA: Number(keyA), keyB: Number(keyB), lineX2: Number(lineX2) } };
+      }
+    }
+  }
+  throw new Error("invalid market kind (half lines only; stat keys = base 1-8 + period prefix)");
+}
+
 export function kindSeed(kind: MarketKindArg): Buffer {
   if ("winnerDrawLoser" in kind) return Buffer.from([0, 0, 0]);
-  const b = Buffer.alloc(3);
-  b[0] = 1;
-  b.writeUInt16LE(kind.totalGoalsOverUnder.lineX2, 1);
+  if ("totalGoalsOverUnder" in kind) {
+    const b = Buffer.alloc(3);
+    b[0] = 1;
+    b.writeUInt16LE(kind.totalGoalsOverUnder.lineX2, 1);
+    return b;
+  }
+  if ("statOverUnder" in kind) {
+    const b = Buffer.alloc(5);
+    b[0] = 2;
+    b.writeUInt16LE(kind.statOverUnder.statKey, 1);
+    b.writeUInt16LE(kind.statOverUnder.lineX2, 3);
+    return b;
+  }
+  const b = Buffer.alloc(7);
+  b[0] = 3;
+  b.writeUInt16LE(kind.twoStatSumOverUnder.keyA, 1);
+  b.writeUInt16LE(kind.twoStatSumOverUnder.keyB, 3);
+  b.writeUInt16LE(kind.twoStatSumOverUnder.lineX2, 5);
   return b;
+}
+
+/** TxLINE stat keys the settlement proof must cover, in order (a, b?). */
+export function kindStatKeys(kind: MarketKindArg): number[] {
+  if ("winnerDrawLoser" in kind || "totalGoalsOverUnder" in kind) return [1, 2];
+  if ("statOverUnder" in kind) return [kind.statOverUnder.statKey];
+  return [kind.twoStatSumOverUnder.keyA, kind.twoStatSumOverUnder.keyB];
 }
 
 export function marketPda(fixtureId: number, kind: MarketKindArg): PublicKey {
@@ -113,7 +168,20 @@ export function dailyScoresRootsPda(epochDay: number): PublicKey {
 export function marketToJson(address: PublicKey, m: any) {
   const kind = "winnerDrawLoser" in m.kind
     ? { type: "wdl" as const }
-    : { type: "ou" as const, lineX2: m.kind.totalGoalsOverUnder.lineX2 as number };
+    : "totalGoalsOverUnder" in m.kind
+      ? { type: "ou" as const, lineX2: m.kind.totalGoalsOverUnder.lineX2 as number }
+      : "statOverUnder" in m.kind
+        ? {
+            type: "statOu" as const,
+            statKey: m.kind.statOverUnder.statKey as number,
+            lineX2: m.kind.statOverUnder.lineX2 as number,
+          }
+        : {
+            type: "sumOu" as const,
+            keyA: m.kind.twoStatSumOverUnder.keyA as number,
+            keyB: m.kind.twoStatSumOverUnder.keyB as number,
+            lineX2: m.kind.twoStatSumOverUnder.lineX2 as number,
+          };
   const state = "open" in m.state ? "open" : "settled" in m.state ? "settled" : "voided";
   return {
     address: address.toBase58(),
@@ -238,13 +306,21 @@ export async function buildSettleTx(marketAddr: PublicKey, settler: PublicKey): 
   const updates = await tx.scoresHistorical(fixtureId);
   const finalRec = updates.filter((u) => u.Action === "game_finalised").at(-1);
   if (!finalRec?.Stats) throw new Error("fixture not finalised yet (or outside the historical window)");
-  const home = finalRec.Stats["1"] ?? 0;
-  const away = finalRec.Stats["2"] ?? 0;
-  const outcome = "winnerDrawLoser" in m.kind
-    ? home > away ? 0 : home === away ? 1 : 2
-    : home + away > m.kind.totalGoalsOverUnder.lineX2 / 2 ? 0 : 1;
+  const stats = finalRec.Stats;
+  const val = (k: number) => stats[String(k)] ?? 0;
+  const home = val(1);
+  const away = val(2);
+  let outcome: number;
+  if ("winnerDrawLoser" in m.kind) outcome = home > away ? 0 : home === away ? 1 : 2;
+  else if ("totalGoalsOverUnder" in m.kind) outcome = home + away > m.kind.totalGoalsOverUnder.lineX2 / 2 ? 0 : 1;
+  else if ("statOverUnder" in m.kind) outcome = val(m.kind.statOverUnder.statKey) > m.kind.statOverUnder.lineX2 / 2 ? 0 : 1;
+  else {
+    const { keyA, keyB, lineX2 } = m.kind.twoStatSumOverUnder;
+    outcome = val(keyA) + val(keyB) > lineX2 / 2 ? 0 : 1;
+  }
 
-  const proof = (await tx.statValidation({ fixtureId, seq: finalRec.Seq, statKeys: [1, 2] })) as ScoresStatValidationV2;
+  const statKeys = kindStatKeys(m.kind as MarketKindArg);
+  const proof = (await tx.statValidation({ fixtureId, seq: finalRec.Seq, statKeys })) as ScoresStatValidationV2;
   const statTerm = (i: number) => ({
     statToProve: proof.statsToProve[i],
     eventStatRoot: toBytes32(proof.eventStatRoot),
@@ -265,7 +341,7 @@ export async function buildSettleTx(marketAddr: PublicKey, settler: PublicKey): 
     fixtureProof: toProofNodes(proof.subTreeProof),
     mainTreeProof: toProofNodes(proof.mainTreeProof),
     statA: statTerm(0),
-    statB: statTerm(1),
+    statB: statKeys.length > 1 ? statTerm(1) : null,
   };
   const ix = await program.methods
     .settle(args)

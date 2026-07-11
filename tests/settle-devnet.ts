@@ -23,8 +23,9 @@ import { isFinalised, STAT } from "@txline-kit/constants";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  KIND_WDL, kindOverUnder, connection, dailyScoresRootsPda, loadWallet, marketPda,
-  positionPda, proofplayProgram, ROOT, settleArgsFromProof, TXORACLE_PROGRAM_ID, vaultPda,
+  KIND_WDL, kindOverUnder, kindTwoStatSum, connection, dailyScoresRootsPda, loadWallet,
+  marketPda, positionPda, proofplayProgram, ROOT, settleArgsFromProof, TXORACLE_PROGRAM_ID,
+  vaultPda,
 } from "../keeper/src/common.js";
 
 const conn = connection();
@@ -63,7 +64,16 @@ const home = finalRec.Stats["1"] ?? 0;
 const away = finalRec.Stats["2"] ?? 0;
 const trueWdl = home > away ? 0 : home === away ? 1 : 2; // program outcome index
 const trueOu = home + away > 2.5 ? 0 : 1;
-console.log(`fixture ${FIXTURE} ${fixtureName}: final ${home}-${away} (wdl=${trueWdl}, ou2.5=${trueOu === 0 ? "over" : "under"})`);
+// Corners prop (the track's literal parametric example): total corners O/U.
+// Pick a line that guarantees a determinate outcome from the known final stats.
+const corners = (finalRec.Stats["7"] ?? 0) + (finalRec.Stats["8"] ?? 0);
+const cornersLineX2 = corners > 0 ? corners * 2 - 1 : 1; // over wins if corners>0, else under wins
+const trueCorners = corners > cornersLineX2 / 2 ? 0 : 1;
+const KIND_CORNERS = kindTwoStatSum(7, 8, cornersLineX2);
+console.log(
+  `fixture ${FIXTURE} ${fixtureName}: final ${home}-${away}, corners ${corners} ` +
+  `(wdl=${trueWdl}, ou2.5=${trueOu === 0 ? "over" : "under"}, corners O/U ${cornersLineX2 / 2}=${trueCorners === 0 ? "over" : "under"})`,
+);
 
 // --- funding: second bettor wallet (SOL from A, pUSDC from A's stash) --------
 step("fund bettor B");
@@ -85,9 +95,10 @@ await splTransfer(conn, walletA, ataA, ataB, walletA, 500_000_000n); // 500 pUSD
 step("create markets");
 const wdl = marketPda(program.programId, FIXTURE, KIND_WDL);
 const ou = marketPda(program.programId, FIXTURE, kindOverUnder(5));
+const cornersMkt = marketPda(program.programId, FIXTURE, KIND_CORNERS);
 const kickoff = Math.floor(Date.now() / 1000) + 40;
 
-for (const [pda, kind] of [[wdl, KIND_WDL], [ou, kindOverUnder(5)]] as const) {
+for (const [pda, kind] of [[wdl, KIND_WDL], [ou, kindOverUnder(5)], [cornersMkt, KIND_CORNERS]] as const) {
   if (await conn.getAccountInfo(pda)) {
     const m = await program.account.market.fetch(pda);
     if (!("open" in m.state)) throw new Error("Market already settled from a previous run — redeploy for a clean test");
@@ -117,6 +128,11 @@ await program.methods.bet(loseWdl, new BN(50_000_000)).accounts(betAccounts(wdl,
 const pools = (await program.account.market.fetch(wdl)).pools.map(String);
 console.log("pools:", pools);
 assert(pools[trueWdl] === "100000000" && pools[loseWdl] === "50000000", "pools should reflect both bets");
+
+// Corners market: B alone backs the LOSING side -> tests the
+// empty-winning-pool refund rule after settlement.
+await program.methods.bet(1 - trueCorners, new BN(30_000_000)).accounts(betAccounts(cornersMkt, walletB, ataB)).signers([walletB]).rpc();
+console.log(`corners: B backed the losing side (${1 - trueCorners}) with 30`);
 
 step("wait for kickoff lock");
 await new Promise((r) => setTimeout(r, 45_000));
@@ -176,6 +192,17 @@ step(`settle O/U claiming ${trueOu === 0 ? "OVER" : "UNDER"} (true) — expect s
 await program.methods.settle(settleArgsFromProof(proof, trueOu)).accounts(settleAccounts(ou)).preInstructions([budget]).rpc();
 console.log("O/U settled ✅");
 
+step(`settle CORNERS prop (keys 7+8, O/U ${cornersLineX2 / 2}) with a corners proof — expect success`);
+const cornersProof = (await txl.statValidation({ fixtureId: FIXTURE, seq: finalUpdate.Seq, statKeys: [7, 8] })) as ScoresStatValidationV2;
+await program.methods
+  .settle(settleArgsFromProof(cornersProof, trueCorners))
+  .accounts(settleAccounts(cornersMkt))
+  .preInstructions([budget])
+  .rpc();
+const cornersState = await program.account.market.fetch(cornersMkt);
+assert("settled" in cornersState.state && cornersState.outcome === trueCorners, "corners market settled to true outcome");
+console.log("corners prop settled by proof ✅ (generalized market language works)");
+
 // --- claims -------------------------------------------------------------------
 step("claims");
 const before = (await getAccount(conn, ataA)).amount;
@@ -201,4 +228,29 @@ try {
   console.log("loser claim rejected ✅");
 }
 
-console.log("\nALL DEVNET TESTS PASSED 🎉 — parimutuel lifecycle settled by a real TxLINE Merkle proof");
+step("winner double-claim — expect AlreadyClaimed");
+try {
+  await program.methods.claim().accounts({
+    market: wdl, position: positionPda(program.programId, wdl, walletA.publicKey),
+    vault: vaultPda(program.programId, wdl), claimerToken: ataA,
+    claimer: walletA.publicKey, tokenProgram: TOKEN_PROGRAM_ID,
+  }).rpc();
+  throw new Error("double claim should have failed");
+} catch (e) {
+  assert(String(e).includes("AlreadyClaimed"), `expected AlreadyClaimed, got: ${String(e).slice(0, 120)}`);
+  console.log("double claim rejected ✅");
+}
+
+step("corners market: nobody backed the winner — loser gets a refund");
+const bBefore = (await getAccount(conn, ataB)).amount;
+await program.methods.claim().accounts({
+  market: cornersMkt, position: positionPda(program.programId, cornersMkt, walletB.publicKey),
+  vault: vaultPda(program.programId, cornersMkt), claimerToken: ataB,
+  claimer: walletB.publicKey, tokenProgram: TOKEN_PROGRAM_ID,
+}).signers([walletB]).rpc();
+const refunded = (await getAccount(conn, ataB)).amount - bBefore;
+// stake 30, settler bounty 0.5% (0.15) already left the vault -> 29.85 back
+console.log(`refund received: ${Number(refunded) / 1e6} pUSDC (staked 30, bounty 0.15 went to the settler)`);
+assert(refunded === 29_850_000n, `expected 29.85 refund, got ${refunded}`);
+
+console.log("\nALL DEVNET TESTS PASSED 🎉 — parimutuel lifecycle + generalized props settled by real TxLINE Merkle proofs");

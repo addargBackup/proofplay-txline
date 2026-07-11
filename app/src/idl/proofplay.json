@@ -521,10 +521,15 @@
     {
       "code": 6016,
       "name": "BadLine",
-      "msg": "Over/under line must be a half line (odd line_x2) below 20 goals"
+      "msg": "Over/under line must be a half line (odd line_x2)"
     },
     {
       "code": 6017,
+      "name": "BadStatKey",
+      "msg": "Unknown TxLINE stat key (base 1-8 + period prefix 0..7000)"
+    },
+    {
+      "code": 6018,
       "name": "BountyTooHigh",
       "msg": "Bounty exceeds maximum"
     }
@@ -635,6 +640,36 @@
           {
             "name": "TotalGoalsOverUnder",
             "fields": [
+              {
+                "name": "line_x2",
+                "type": "u16"
+              }
+            ]
+          },
+          {
+            "name": "StatOverUnder",
+            "fields": [
+              {
+                "name": "stat_key",
+                "type": "u16"
+              },
+              {
+                "name": "line_x2",
+                "type": "u16"
+              }
+            ]
+          },
+          {
+            "name": "TwoStatSumOverUnder",
+            "fields": [
+              {
+                "name": "key_a",
+                "type": "u16"
+              },
+              {
+                "name": "key_b",
+                "type": "u16"
+              },
               {
                 "name": "line_x2",
                 "type": "u16"
@@ -831,7 +866,7 @@
           {
             "name": "stat_a",
             "docs": [
-              "Must prove TxLINE key 1 (home goals, total period) at finality."
+              "Must prove the market kind's first expected stat key at finality."
             ],
             "type": {
               "defined": {
@@ -842,11 +877,13 @@
           {
             "name": "stat_b",
             "docs": [
-              "Must prove TxLINE key 2 (away goals, total period) at finality."
+              "Second stat term iff the kind expects one (e.g. away goals for 1X2)."
             ],
             "type": {
-              "defined": {
-                "name": "StatTerm"
+              "option": {
+                "defined": {
+                  "name": "StatTerm"
+                }
               }
             }
           }

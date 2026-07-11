@@ -5,10 +5,9 @@ import { ComputeBudgetProgram, Keypair, PublicKey } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import type { ScoresStatValidationV2, TxlineClient } from "@txline-kit/client";
 import { epochDayFromTs } from "@txline-kit/client/proofs";
-import { STAT } from "@txline-kit/constants";
 import {
-  dailyScoresRootsPda, marketPda, outcomeFromStats, settleArgsFromProof,
-  TXORACLE_PROGRAM_ID, vaultPda, type MarketKindArg,
+  dailyScoresRootsPda, kindStatKeys, marketPda, outcomeFromStats,
+  settleArgsFromProof, TXORACLE_PROGRAM_ID, vaultPda, type MarketKindArg,
 } from "./common.js";
 
 export interface SettleResult {
@@ -30,14 +29,20 @@ export async function settleAllForFixture(opts: {
   kinds: MarketKindArg[];
 }): Promise<SettleResult[]> {
   const { program, wallet, api, mint, fixtureId, finalSeq, stats, kinds } = opts;
-  const proof = (await api.statValidation({
-    fixtureId,
-    seq: finalSeq,
-    statKeys: [STAT.T1_GOALS, STAT.T2_GOALS],
-  })) as ScoresStatValidationV2;
-  const roots = dailyScoresRootsPda(epochDayFromTs(proof.summary.updateStats.minTimestamp));
   const settlerToken = getAssociatedTokenAddressSync(mint, wallet.publicKey);
   const results: SettleResult[] = [];
+  // One proof fetch per distinct key-set (kinds share proofs where possible).
+  const proofCache = new Map<string, ScoresStatValidationV2>();
+  const proofFor = async (keys: number[]) => {
+    const cacheKey = keys.join(",");
+    if (!proofCache.has(cacheKey)) {
+      proofCache.set(
+        cacheKey,
+        (await api.statValidation({ fixtureId, seq: finalSeq, statKeys: keys })) as ScoresStatValidationV2,
+      );
+    }
+    return proofCache.get(cacheKey)!;
+  };
 
   for (const kind of kinds) {
     const pda = marketPda(program.programId, fixtureId, kind);
@@ -47,6 +52,8 @@ export async function settleAllForFixture(opts: {
     const state = await (program.account as any).market.fetch(pda);
     if (!("open" in state.state)) continue;
 
+    const proof = await proofFor(kindStatKeys(kind));
+    const roots = dailyScoresRootsPda(epochDayFromTs(proof.summary.updateStats.minTimestamp));
     const outcome = outcomeFromStats(stats, kind);
     const sig = await program.methods
       .settle(settleArgsFromProof(proof, outcome))
@@ -61,12 +68,14 @@ export async function settleAllForFixture(opts: {
       })
       .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })])
       .rpc();
-    results.push({
-      market: pda.toBase58(),
-      kindLabel: "winnerDrawLoser" in kind ? "1X2" : `O/U ${kind.totalGoalsOverUnder.lineX2 / 2}`,
-      outcome,
-      sig,
-    });
+    const kindLabel = "winnerDrawLoser" in kind
+      ? "1X2"
+      : "totalGoalsOverUnder" in kind
+        ? `Goals O/U ${kind.totalGoalsOverUnder.lineX2 / 2}`
+        : "statOverUnder" in kind
+          ? `Stat ${kind.statOverUnder.statKey} O/U ${kind.statOverUnder.lineX2 / 2}`
+          : `Stats ${kind.twoStatSumOverUnder.keyA}+${kind.twoStatSumOverUnder.keyB} O/U ${kind.twoStatSumOverUnder.lineX2 / 2}`;
+    results.push({ market: pda.toBase58(), kindLabel, outcome, sig });
   }
   return results;
 }
