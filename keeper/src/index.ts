@@ -109,6 +109,42 @@ async function liveLoop() {
   }
 }
 
+/** Boot-time catch-up: settle any open market whose fixture finished while the
+ *  keeper was offline (the live loop only sees NEW game_finalised events).
+ *  Uses the historical endpoint (~6h–2wk window) to recover the final record. */
+async function sweepUnsettled() {
+  const today = Math.floor(Date.now() / 86_400_000);
+  const fixtures = await api.fixturesSnapshot(WORLD_CUP, today - 13);
+  const finished = fixtures.filter((f) => f.StartTime < Date.now() - 2 * 3600_000);
+  for (const f of finished) {
+    const anyOpen = (await Promise.all(
+      [KIND_WDL, kindOverUnder(5)].map(async (kind) => {
+        const pda = marketPda(program.programId, f.FixtureId, kind);
+        if (!(await marketExists(pda))) return false;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const m = await (program.account as any).market.fetch(pda);
+        return "open" in m.state;
+      }),
+    )).some(Boolean);
+    if (!anyOpen) continue;
+    try {
+      const updates = await api.scoresHistorical(f.FixtureId);
+      const final = updates.filter(isFinalised).at(-1);
+      if (!final?.Stats) {
+        log("sweep: fixture finished but no finalised record yet", { fixtureId: f.FixtureId });
+        continue;
+      }
+      log("sweep: settling missed fixture", { fixtureId: f.FixtureId, seq: final.Seq });
+      await settleFixture(f.FixtureId, final.Seq, final.Stats);
+    } catch (err) {
+      log("sweep failed for fixture", { fixtureId: f.FixtureId, err: String(err).slice(0, 200) });
+    }
+  }
+}
+
 if (replayBase) log("replay mode: skipping market bootstrap (create demo markets via pnpm demo)");
-else await bootstrapMarkets();
+else {
+  await bootstrapMarkets();
+  await sweepUnsettled();
+}
 await liveLoop();
