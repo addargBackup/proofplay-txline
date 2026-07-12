@@ -30,7 +30,7 @@ import {
 } from "./common.js";
 import { settleAllForFixture } from "./settler.js";
 
-const PORT = 8788;
+const PORT = Number(process.env.REPLAY_PORT ?? 8788);
 const corpusDir = process.env.CORPUS_DIR ?? path.join(ROOT, "corpus-sample");
 const FIXTURE = Number(process.env.DEMO_FIXTURE ?? fs.readdirSync(corpusDir).find((d) => /^\d+$/.test(d)));
 const conn = connection();
@@ -65,15 +65,28 @@ for (const [name, w] of [["alice", alice], ["bob", bob]] as const) {
 }
 
 // --- 3. markets + bets ----------------------------------------------------------
+// Markets are one-per-(fixture, kind) FOREVER (that's the protocol working) —
+// so each demo run auto-selects kinds nobody has used yet: 1X2 if free, then
+// unused goals-O/U lines, then unused corners-prop lines. Re-runnable ~forever.
 const kickoff = Math.floor(Date.now() / 1000) + 30;
-const kinds: MarketKindArg[] = [KIND_WDL, kindOverUnder(5)];
-step("creating markets (1X2 + O/U 2.5), 30s betting window");
+const { kindTwoStatSum } = await import("./common.js");
+const candidates: MarketKindArg[] = [
+  KIND_WDL,
+  ...[5, 7, 3, 9, 11, 13].map((l) => kindOverUnder(l)),
+  ...[21, 19, 23, 17, 25, 15].map((l) => kindTwoStatSum(7, 8, l)),
+];
+const kinds: MarketKindArg[] = [];
+for (const kind of candidates) {
+  if (kinds.length >= 2) break;
+  if (!(await conn.getAccountInfo(marketPda(program.programId, FIXTURE, kind)))) kinds.push(kind);
+}
+if (kinds.length === 0) {
+  console.log("every candidate market kind is already settled for this fixture — set DEMO_FIXTURE to another corpus fixture");
+  process.exit(1);
+}
+step(`creating ${kinds.length} unused markets, 30s betting window`);
 for (const kind of kinds) {
   const pda = marketPda(program.programId, FIXTURE, kind);
-  if (await conn.getAccountInfo(pda)) {
-    console.log("market already exists (settled in a previous demo?) — delete corpus-sample fixture or use DEMO_FIXTURE to pick another");
-    process.exit(1);
-  }
   await program.methods
     .createMarket(new BN(FIXTURE), new BN(kickoff), kind, 50)
     .accounts({
@@ -84,8 +97,9 @@ for (const kind of kinds) {
   console.log(`  market: ${pda.toBase58()} (${JSON.stringify(kind)})`);
 }
 
-step("bets: alice -> home win (75), bob -> away win (40) on the 1X2 market");
-const wdl = marketPda(program.programId, FIXTURE, KIND_WDL);
+step("bets: alice -> outcome 0 (75), bob -> last outcome (40) on the first market");
+const wdl = marketPda(program.programId, FIXTURE, kinds[0]);
+const wdlOutcomes = "winnerDrawLoser" in kinds[0] ? 3 : 2;
 const bet = (bettor: Keypair, ata: PublicKey, outcome: number, amount: number) =>
   program.methods
     .bet(outcome, new BN(amount * 1e6))
@@ -97,7 +111,7 @@ const bet = (bettor: Keypair, ata: PublicKey, outcome: number, amount: number) =
     .signers([bettor])
     .rpc();
 await bet(alice, atas.alice, 0, 75);
-await bet(bob, atas.bob, 2, 40);
+await bet(bob, atas.bob, wdlOutcomes - 1, 40);
 console.log("  pools:", (await (program.account as any).market.fetch(wdl)).pools.map(String));
 
 step("waiting for kickoff lock…");
