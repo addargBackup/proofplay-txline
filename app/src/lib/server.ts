@@ -303,9 +303,10 @@ export async function buildSettleTx(marketAddr: PublicKey, settler: PublicKey): 
   const fixtureId = Number(m.fixtureId);
   const tx = txline();
   await tx.auth.ensureActivated();
-  const updates = await tx.scoresHistorical(fixtureId);
+  // Future fixtures return an empty body here — map parse noise to human copy.
+  const updates = await tx.scoresHistorical(fixtureId).catch(() => []);
   const finalRec = updates.filter((u) => u.Action === "game_finalised").at(-1);
-  if (!finalRec?.Stats) throw new Error("fixture not finalised yet (or outside the historical window)");
+  if (!finalRec?.Stats) throw new Error("match not finished yet (settlement needs the final TxLINE record)");
   const stats = finalRec.Stats;
   const val = (k: number) => stats[String(k)] ?? 0;
   const home = val(1);
