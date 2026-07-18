@@ -67,33 +67,108 @@ who bothers to submit it earns a small bounty for the trouble.
 
 ## 3. Technical highlights
 
-- **Markets are data, not hardcoded types.** A market's settlement rule is a
-  `PredicateSpec` stored on-chain: any TxLINE stat key, any period (full
-  match / 1st half / 2nd half), compared against any threshold, or two stat
-  keys summed against a threshold (the "corners A + corners B > 10" example
-  from the track brief, built exactly as specified). The frontend's market
-  builder shows the literal generated stat key (e.g. `3007` = 2nd-half home
-  corners) before you deploy.
-- **The settler never chooses the predicate — the program does.** A caller
-  claims *which* outcome they're proving; the program reconstructs the exact
-  comparison from the stored spec and only that. We tested submitting a
-  deliberately false outcome on devnet — the CPI into `txoracle` rejected it.
-- **A proof only counts if it's actually final.** TxLINE marks a proven stat
-  with `period == 100` exclusively in the `game_finalised` record — a
-  mid-match proof carries the live phase id instead. Our settle instruction
-  requires `period == 100`; we tested submitting a real mid-match proof
-  (halftime score, final match different) and the program rejected it. This
-  single check is what makes "settled by proof" actually sound rather than
-  spoofable.
-- **Abandoned matches don't strand funds.** Any market unsettled 72 hours
-  after kickoff can be voided by anyone, and stakes refund pro-rata — no
-  admin action required.
-- **Judging happens after the tournament ends**, so the app ships a
-  wire-compatible replay of a real recorded match (`packages/txline-kit`'s
-  replay server). `pnpm demo` runs the entire lifecycle — market creation,
-  betting, kickoff lock, full time, on-chain settlement with a real TxLINE
-  proof — against that recording, indistinguishable from live to every layer
-  of the code above it.
+### The market language — four kinds, one predicate system
+
+A market's settlement rule is a `PredicateSpec` stored on-chain, not a
+hardcoded bet type:
+
+| Kind | Example | Outcomes |
+|---|---|---|
+| `WinnerDrawLoser` | Full-match 1X2 | home / draw / away |
+| `TotalGoalsOverUnder{line}` | Total goals O/U 2.5 | over / under |
+| `StatOverUnder{statKey,line}` | Any single TxLINE stat, any period — e.g. 2nd-half home corners O/U 5.5 (`statKey 3007`) | over / under |
+| `TwoStatSumOverUnder{keyA,keyB,line}` | Two stats summed, any period — the track brief's own "Team A corners + Team B corners > 10" example, built exactly as specified | over / under |
+
+The frontend's market builder shows the literal generated stat key (e.g.
+`Norway corners(key 3007)`) before you deploy. **This shipped as a live
+program upgrade** — the four-kind system replaced an earlier two-kind version
+*on the already-deployed devnet program, in place*, with legacy market PDAs
+kept byte-compatible so markets settled before the upgrade were untouched.
+
+### The settler never chooses the predicate — the program does
+
+A caller claims *which* outcome they're proving; the program reconstructs
+the exact comparison from the market's stored spec and only that — a settler
+cannot submit a proof for a made-up outcome. We tested submitting a
+deliberately false outcome on devnet and the CPI into `txoracle` rejected it.
+
+### A proof only counts if it's actually final
+
+TxLINE marks a proven stat with `period == 100` exclusively in the
+`game_finalised` record — a mid-match proof carries the live phase id
+instead. Our settle instruction requires `period == 100`; we tested
+submitting a real mid-match proof (halftime score, different from the final)
+and the program rejected it. This single check is what makes "settled by
+proof" actually sound rather than spoofable.
+
+### Verified on-chain, adversarially, not just happy-path
+
+The devnet test suite (`pnpm test:devnet`) auto-selects a fresh finished
+World Cup fixture every run and exercises the full lifecycle plus every
+failure mode we could think of, all green:
+
+- Bet, kickoff lock enforcement, settlement with a **real TxLINE proof**
+- **False-outcome proof rejected** by the CPI
+- **Mid-match proof rejected** by the `period == 100` guard
+- **Draw outcome** settled correctly (tested live on Switzerland 0-0 Colombia)
+- **Corners prop settled with a real two-stat proof** (`statKeys=[7,8]`) —
+  the generalized market language, proven end to end, not just described
+- **Winner payout exact to the token** (149.25 of a 150 pool after the 0.5%
+  bounty) and **empty-winning-pool refund exact to the token** (29.85 of 30)
+- **Winner double-claim rejected**; **loser claim rejected**
+
+Across development we've settled real markets on multiple actual World Cup
+fixtures on devnet — Spain 2-1 Belgium, Switzerland 0-0 Colombia,
+France 2-0 Morocco, Argentina 3-2 Cape Verde, Norway v England, and
+Argentina v Switzerland — not one scripted happy path.
+
+### Autonomous recovery, not just autonomous operation
+
+The keeper doesn't just settle matches it sees finish live — it recovers
+from its own downtime. On boot, `sweepUnsettled()` checks every open market
+against TxLINE's historical endpoint and settles anything whose match
+already ended while the keeper was offline. This isn't theoretical: it
+recovered two real fixtures (Norway v England, Argentina v Switzerland — 4
+markets) that finished while the keeper wasn't running, settling them on
+devnet with real proofs the moment it restarted.
+
+### Permissionless settlement is a UI feature, not just a program capability
+
+Any connected wallet can open a locked market and click **"Settle with proof
+(earn bounty)"** — the app fetches the real TxLINE proof and builds the
+settlement transaction for that wallet to sign, exactly the same on-chain
+path the keeper uses. This proves the "anyone can settle" claim isn't just
+true in the program — it's one click away for an end user, with no keeper
+dependency.
+
+### Non-custodial by construction
+
+The browser never holds a signing key and never talks to TxLINE or Anchor
+directly. API routes build **unsigned** transactions server-side; the
+connected wallet signs client-side before anything is sent to devnet — the
+same pattern behind Solana Pay. Verified end to end with a headless test
+(`tests/consumer-flow.ts`): faucet → build a bet transaction over HTTP →
+sign locally → submit to devnet → read the resulting position back through
+the same API → confirm the settle route fails cleanly (not a stack trace)
+when called on a match that hasn't finished yet.
+
+### Abandoned matches don't strand funds
+
+Any market unsettled 72 hours after kickoff can be voided by anyone, and
+stakes refund pro-rata — no admin action required.
+
+### Judging happens after the tournament ends
+
+So the app ships a wire-compatible replay of **real captured match data** —
+over 1,100 score updates and 66,000+ StablePrice odds records pulled from
+TxLINE's historical endpoints for one recorded match alone
+(`packages/txline-kit`'s replay server). `pnpm demo` runs the entire
+lifecycle — market creation, betting, kickoff lock, full time, on-chain
+settlement with a real TxLINE proof — against that recording, indistinguishable
+from live to every layer of the code above it, and it re-runs indefinitely
+(each run auto-selects a market kind nobody has used yet on that fixture,
+since market PDAs are permanent once settled — that permanence *is* the
+protocol working as designed).
 
 ## 4. Business highlights
 
@@ -198,9 +273,13 @@ TxLINE `txoracle` `6pW64gN1s2uqjHkn1unFeEjAwJkPGHoppGvS715wyP2J`.
 pnpm install
 pnpm setup-mint      # one-time: devnet pUSDC test mint
 pnpm demo            # full lifecycle against a real recorded match, ~90s
+pnpm test:devnet     # the adversarial suite from §3, on-chain, ~2 min
 ```
 `pnpm demo` replays a real World Cup match, creates markets, places bets,
 locks at kickoff, fast-forwards to full time, and settles on-chain with a
-real TxLINE Merkle proof — no manual steps. See the root
+real TxLINE Merkle proof — no manual steps. `pnpm test:devnet` is the
+stronger proof: it runs the false-outcome rejection, the mid-match rejection,
+the exact-token payout/refund checks, and the double-claim rejection against
+a live, freshly-picked finished fixture, live on devnet. See the root
 [README.md](../README.md) for the app URL and live-mode (`pnpm keeper`)
 instructions.
