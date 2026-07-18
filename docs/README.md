@@ -8,7 +8,7 @@ trustlessly on Solana by cryptographic proofs from [TxLINE](https://txline.txodd
 3. [Technical highlights](#3-technical-highlights)
 4. [Business highlights](#4-business-highlights)
 5. [Architecture](#5-architecture)
-6. [Endpoints used](#6-txline-endpoints-used)
+6. [Endpoints used](#6-txline-endpoints-used) (+ [why an SDK](#why-an-sdk-instead-of-calling-these-directly), + [raw → SDK mapping](#raw-endpoints-replaced-by-sdk-calls))
 7. [Run it](#7-run-it--judge-runbook)
 
 See also: [FEEDBACK.md](../FEEDBACK.md) for our experience building on the
@@ -142,6 +142,52 @@ Anchor program (Solana devnet)  ──CPI──▶  txoracle (TxLINE's on-chain 
 | `GET /api/scores/historical/{fixtureId}` | Real-match corpus for judge/replay mode |
 | `GET /api/scores/stat-validation` | Merkle proof of final stats → on-chain settlement |
 | `txoracle::validate_stat` / `validate_stat_v2` (CPI) | On-chain proof verification (Solana program) |
+
+### Why an SDK instead of calling these directly
+
+We built [`txline-kit`](../packages/txline-kit) rather than hitting the raw
+API from `keeper/` and `app/` because the raw API has real, repeated sharp
+edges — see the kit's own [Field Guide](../packages/txline-kit/docs/VERIFIED.md)
+for the full list — and ProofPlay's soundness depends on getting several of
+them exactly right *every time* (not just once):
+
+- **Auth is a multi-step flow** (guest JWT → on-chain `subscribe()` → token
+  activation → transparent renewal on 401), not a single request. Writing
+  that once in the kit means the keeper, the app, and our test suite can't
+  each implement it slightly differently and drift.
+- **Live records don't match the documented schema casing**, and
+  `/scores/historical` returns SSE-framed text on a `200`, not JSON. Code
+  that doesn't know this silently breaks in production, not at compile time.
+- **The Merkle-proof payload has to be shaped exactly right for the on-chain
+  CPI to accept it** — byte arrays, PDA derivation, the real `validate_stat`
+  predicate grammar (which isn't quite what the API's own prose implies). A
+  settlement path is the worst possible place to hand-roll this twice.
+- **Replay mode had to be wire-compatible by construction.** Because the kit
+  is the *only* thing that talks to TxLINE, pointing it at a replay server
+  instead (`network: 'replay'`) makes every consumer — keeper, app, tests —
+  demo-ready with a one-line change, with zero risk of the "live" and
+  "replay" code paths silently diverging.
+
+In short: the raw API works fine for a one-off script. A protocol whose
+entire trust model rests on "the proof check is exact, every time" needed a
+single, tested, reused implementation of that check — not three.
+
+### Raw endpoints replaced by SDK calls
+
+Every TxLINE call in this repo goes through `@txline-kit/client` — there is
+no direct `fetch()` against `txodds.com` anywhere in `keeper/`, `app/`, or
+`tests/`. This is the exact mapping from raw endpoint to the kit method that
+replaces it:
+
+| Raw endpoint (what you'd call by hand) | SDK call (what we call instead) |
+|---|---|
+| `POST /auth/guest/start` + on-chain `subscribe()` + `POST /api/token/activate` (+ manual 401 retry) | `tx.auth.ensureActivated()` |
+| `GET /api/fixtures/snapshot?competitionId=&startEpochDay=` | `tx.fixturesSnapshot(competitionId)` |
+| `GET /api/scores/snapshot/{fixtureId}` | `tx.scoresSnapshot(fixtureId)` |
+| `GET /api/scores/stream` (raw `EventSource`, manual reconnect/resume) | `for await (const msg of tx.scoresStream())` |
+| `GET /api/scores/historical/{fixtureId}` (+ manual SSE-body parsing) | `tx.scoresHistorical(fixtureId)` |
+| `GET /api/scores/stat-validation?fixtureId=&seq=&statKeys=` | `tx.statValidation({ fixtureId, seq, statKeys })` |
+| Manual borsh/PDA work to call `txoracle::validate_stat[_v2]` | `proofs.toBytes32`, `proofs.toProofNodes`, `proofs.dailyScoresRootsPda`, `proofs.buildStatValidationInput` |
 
 Devnet program addresses: ProofPlay `DDLwN6s1mswd7wiXFHy76eTahw4VYPAUrvEHZNdcHaRw`,
 TxLINE `txoracle` `6pW64gN1s2uqjHkn1unFeEjAwJkPGHoppGvS715wyP2J`.
