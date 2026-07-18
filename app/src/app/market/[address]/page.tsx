@@ -169,10 +169,14 @@ export default function MarketPage() {
         </div>
       )}
 
-      {/* Permissionless settle */}
-      {m.state === "open" && finished && (
+      {/* Permissionless settle — shown for any locked market. Finished matches
+          return an empty live snapshot, so we gate on kickoff, not score; the
+          settle route reports cleanly if the match isn't final yet. */}
+      {m.state === "open" && locked && (
         <div className="card border-gold/40">
-          <h2 className="font-semibold text-gold">Match finished — settle it yourself</h2>
+          <h2 className="font-semibold text-gold">
+            {finished ? "Match finished — settle it yourself" : "Settle it with a proof"}
+          </h2>
           <p className="mt-1 text-sm text-neutral-300">
             Anyone can settle this market by submitting TxLINE&apos;s Merkle proof of the final score.
             The settler earns {(m.bountyBps / 100).toFixed(1)}% of the pool. Your wallet signs the
