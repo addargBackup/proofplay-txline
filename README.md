@@ -9,6 +9,10 @@ settle it (and earn a bounty for doing so). The program CPIs into TxLINE's
 `txoracle` program to verify the proof against the on-chain daily Merkle root —
 the market maker cannot lie, and neither can the settler.
 
+**📄 [Full technical documentation](docs/README.md)** — how every fact in this
+app traces back to TxLINE, core idea, technical/business highlights, endpoints
+used, and the judge runbook.
+
 - Program (devnet): `DDLwN6s1mswd7wiXFHy76eTahw4VYPAUrvEHZNdcHaRw`
 - Oracle: TxLINE `txoracle` (devnet) `6pW64gN1s2uqjHkn1unFeEjAwJkPGHoppGvS715wyP2J`
 - Data: [TxLINE](https://txline.txodds.com) World Cup feeds via the vendored
