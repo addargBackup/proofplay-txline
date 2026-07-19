@@ -1,5 +1,4 @@
 node_modules/
-dist/
 target/
 .next/
 !target/deploy/proofplay-keypair.json
